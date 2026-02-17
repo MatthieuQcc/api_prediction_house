@@ -1,9 +1,15 @@
 import streamlit as st
 import requests
+from streamlit_folium import st_folium
+import folium
 
 # ============= CONFIG =============
 
 API_URL = "https://api-prediction-house.onrender.com"
+
+# Centre de Toulouse par défaut
+DEFAULT_LAT = 43.6047
+DEFAULT_LON = 1.4442
 
 st.set_page_config(
     page_title="Estimation Immobilier Toulouse",
@@ -20,10 +26,6 @@ st.markdown("""
         html, body, [class*="css"] {
             font-family: 'DM Sans', sans-serif;
         }
-        
-        .main {
-            background-color: #FAFAF8;
-        }
 
         h1 {
             font-family: 'DM Serif Display', serif;
@@ -31,7 +33,7 @@ st.markdown("""
             color: #1a1a1a;
             margin-bottom: 0.2rem !important;
         }
-        
+
         .subtitle {
             color: #888;
             font-size: 1rem;
@@ -96,7 +98,6 @@ st.markdown("""
             font-weight: 500;
             width: 100%;
             cursor: pointer;
-            transition: background 0.2s;
         }
 
         .stButton > button:hover {
@@ -112,10 +113,65 @@ st.markdown("""
             margin-top: 1rem;
         }
 
-        /* Cacher le header Streamlit */
+        .info-box {
+            background: #f0f4ff;
+            border-left: 3px solid #3498db;
+            padding: 0.75rem 1rem;
+            border-radius: 4px;
+            color: #2c3e50;
+            font-size: 0.9rem;
+            margin: 0.5rem 0 1rem 0;
+        }
+
         #MainMenu, footer, header { visibility: hidden; }
     </style>
 """, unsafe_allow_html=True)
+
+# ============= FONCTIONS =============
+
+def geocode_address(address: str):
+    """Convertit une adresse en coordonnées GPS via Nominatim (OpenStreetMap, gratuit)."""
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": f"{address}, Toulouse, France",
+        "format": "json",
+        "limit": 1
+    }
+    headers = {"User-Agent": "ImmoToulouseApp/1.0"}
+    
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        results = response.json()
+        if results:
+            return float(results[0]["lat"]), float(results[0]["lon"]), results[0]["display_name"]
+        return None, None, None
+    except Exception:
+        return None, None, None
+
+
+def create_map(lat, lon):
+    """Crée une carte Folium centrée sur les coordonnées données."""
+    m = folium.Map(
+        location=[lat, lon],
+        zoom_start=14,
+        tiles="CartoDB positron"
+    )
+    folium.Marker(
+        location=[lat, lon],
+        popup="📍 Localisation du bien",
+        icon=folium.Icon(color="black", icon="home", prefix="fa")
+    ).add_to(m)
+    return m
+
+
+# ============= ÉTAT SESSION =============
+
+if "lat" not in st.session_state:
+    st.session_state.lat = DEFAULT_LAT
+if "lon" not in st.session_state:
+    st.session_state.lon = DEFAULT_LON
+if "adresse_affichee" not in st.session_state:
+    st.session_state.adresse_affichee = ""
 
 # ============= HEADER =============
 
@@ -123,7 +179,60 @@ st.markdown("<h1>Estimer mon bien</h1>", unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Estimation instantanée basée sur les ventes à Toulouse</p>', unsafe_allow_html=True)
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
+# ============= RECHERCHE ADRESSE =============
+
+st.markdown("**📍 Localisation du bien**")
+
+col_input, col_btn = st.columns([3, 1])
+
+with col_input:
+    adresse = st.text_input(
+        "Adresse",
+        placeholder="Ex : 12 rue Saint-Rome",
+        label_visibility="collapsed"
+    )
+
+with col_btn:
+    rechercher = st.button("Rechercher", use_container_width=True)
+
+if rechercher and adresse:
+    with st.spinner("Recherche de l'adresse..."):
+        lat, lon, display_name = geocode_address(adresse)
+    
+    if lat and lon:
+        st.session_state.lat = lat
+        st.session_state.lon = lon
+        st.session_state.adresse_affichee = display_name
+        st.success(f"✅ {display_name}")
+    else:
+        st.markdown("""
+            <div class="error-box">
+                ❌ Adresse introuvable. Essayez avec plus de détails (numéro + rue).
+            </div>
+        """, unsafe_allow_html=True)
+
+if st.session_state.adresse_affichee and not rechercher:
+    st.success(f"✅ {st.session_state.adresse_affichee}")
+
+# ============= CARTE =============
+
+st.markdown('<div class="info-box">🖱️ Ou cliquez directement sur la carte pour placer le bien</div>', unsafe_allow_html=True)
+
+m = create_map(st.session_state.lat, st.session_state.lon)
+map_data = st_folium(m, height=350, width=None, returned_objects=["last_clicked"])
+
+# Mettre à jour les coordonnées si l'utilisateur clique sur la carte
+if map_data and map_data.get("last_clicked"):
+    st.session_state.lat = map_data["last_clicked"]["lat"]
+    st.session_state.lon = map_data["last_clicked"]["lng"]
+    st.session_state.adresse_affichee = ""
+
+st.caption(f"Coordonnées sélectionnées : {st.session_state.lat:.4f}, {st.session_state.lon:.4f}")
+
 # ============= FORMULAIRE =============
+
+st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+st.markdown("**🏠 Caractéristiques du bien**")
 
 col1, col2 = st.columns(2)
 
@@ -135,14 +244,6 @@ with col1:
         value=60.0,
         step=1.0
     )
-    latitude = st.number_input(
-        "Latitude",
-        min_value=43.50,
-        max_value=43.75,
-        value=43.6047,
-        step=0.0001,
-        format="%.4f"
-    )
 
 with col2:
     pieces = st.number_input(
@@ -152,14 +253,6 @@ with col2:
         value=3,
         step=1
     )
-    longitude = st.number_input(
-        "Longitude",
-        min_value=1.25,
-        max_value=1.65,
-        value=1.4442,
-        step=0.0001,
-        format="%.4f"
-    )
 
 has_terrain = st.toggle("Le bien dispose d'un terrain")
 
@@ -167,13 +260,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # ============= BOUTON & APPEL API =============
 
-if st.button("Estimer le prix"):
+if st.button("✦ Estimer le prix"):
     
     payload = {
         "lot1_surface_carrez": surface,
         "nombre_pieces_principales": pieces,
-        "latitude": latitude,
-        "longitude": longitude,
+        "latitude": st.session_state.lat,
+        "longitude": st.session_state.lon,
         "has_terrain": int(has_terrain)
     }
     
@@ -181,7 +274,6 @@ if st.button("Estimer le prix"):
         try:
             response = requests.post(f"{API_URL}/predict", json=payload, timeout=30)
             
-            # HTTP response status code 200 means success
             if response.status_code == 200:
                 data = response.json()
                 
@@ -190,7 +282,6 @@ if st.button("Estimer le prix"):
                 prix_max = data['prix_max']
                 details = data['details']
                 
-                # Affichage du résultat
                 st.markdown(f"""
                     <div class="result-box">
                         <div class="result-label">Estimation</div>
@@ -207,14 +298,14 @@ if st.button("Estimer le prix"):
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
-            
+
             else:
                 st.markdown(f"""
                     <div class="error-box">
                         ❌ Erreur serveur ({response.status_code}) : {response.text}
                     </div>
                 """, unsafe_allow_html=True)
-        
+
         except requests.exceptions.Timeout:
             st.markdown("""
                 <div class="error-box">
@@ -222,7 +313,7 @@ if st.button("Estimer le prix"):
                     Patientez 30 secondes et réessayez.
                 </div>
             """, unsafe_allow_html=True)
-        
+
         except requests.exceptions.ConnectionError:
             st.markdown("""
                 <div class="error-box">
